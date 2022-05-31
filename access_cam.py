@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 import cv2
 import os
@@ -21,15 +23,18 @@ class PedestrianDetector:
     FRAMES_BEFORE_DISAPPEAR = 30
     DISTANCE_BEFORE_NEW_OBJECT = 100
 
-    RESIZE_WORKING_IMAGE = int(3840 / 4)
+    RESIZE_WORKING_IMAGE = int(3840 / 2)
     USE_CUDA_GPU = False
 
     _coco_labels_path = "coco.names"
     _weights_path = "yolov4-tiny.weights"
     _config_path = "yolov4-tiny.cfg"
     # insert the HTTP(S)/RSTP feed from the camera
-    # url = "rtsp://admin:PW@@192.168.1.62/Streaming/Channels/102"
+    # stream_url = "rtsp://admin:PW@@192.168.1.62/Streaming/Channels/102"
+    # stream_url = "videos/annke2hd.20220529_220302_1.mp4"
     stream_url = "videos/annke2hd.20220529_235055_1.mp4"
+    # stream_url = "videos/reolink5hd.20220529_201349_1.mp4"
+
     file_to_export_video_to = ""
 
     fps = None
@@ -83,6 +88,7 @@ class PedestrianDetector:
 
             if self.W is None or self.H is None:
                 (self.H, self.W) = frame.shape[:2]
+                self.centroid_tracker.maxDistance = self.W / 10
                 print("Resized to: {} {}".format(self.H, self.W))
 
             # Create the writer file and object if needed
@@ -115,23 +121,24 @@ class PedestrianDetector:
                 # Predict where all previous trackers say people will be
                 self.status = "Tracking"
                 for _track in self.person_trackers:
-                    _track.update(rgb)
-                    guess = _track.get_position()
+                    _track.update(rgb)  # TODO: Add in dead reckoning prediction here?
+                    dlib_image_guess = _track.get_position()
 
-                    startX, startY = int(guess.left()), int(guess.top())
-                    endX, endY = int(guess.right()), int(guess.bottom())
+                    startX, startY = int(dlib_image_guess.left()), int(dlib_image_guess.top())
+                    endX, endY = int(dlib_image_guess.right()), int(dlib_image_guess.bottom())
 
                     self.person_rectangles.append((startX, startY, endX, endY))
 
             # Get new guesses of where people will be
-            person_loc_guesses = self.centroid_tracker.update(self.person_rectangles)
+            centroid_loc_tracker_guesses, loc_rects = self.centroid_tracker.update(self.person_rectangles)
 
-            for (objectID, centroid) in person_loc_guesses.items():
+            for (objectID, centroid) in centroid_loc_tracker_guesses.items():
                 # check to see if a trackable object exists for the current object ID
                 _trackable_obj = self.trackable_objects.get(objectID, None)
                 if _trackable_obj is None:
                     _label = "Person {}".format(objectID+1)
-                    _trackable_obj = TrackableObject(objectID, centroid, _label)
+                    _rect = loc_rects[objectID]
+                    _trackable_obj = TrackableObject(objectID, centroid, label=_label, last_rect=_rect)
 
                 # otherwise, there is a trackable object that we can utilize it to determine direction
                 else:
@@ -140,6 +147,7 @@ class PedestrianDetector:
                     y = [c[1] for c in _trackable_obj.centroids]
                     direction = centroid[1] - np.mean(y)  # TODO: Use for target prediction
                     _trackable_obj.centroids.append(centroid)
+                    _trackable_obj.last_rect = self.closest_rect(centroid)
 
                     # check to see if the object has been counted or not
                     if not _trackable_obj.counted:
@@ -162,12 +170,31 @@ class PedestrianDetector:
                 mid_x = centroid[0]
                 mid_y = centroid[1]
 
-                cv2.putText(frame, _trackable_obj.label, (mid_x - 10, mid_y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                for count, lp in enumerate(_trackable_obj.centroids):
+                    if count < len(_trackable_obj.centroids)-1:
+                        lp_next = _trackable_obj.centroids[count+1]
+                        cv2.line(frame, (int(lp[0]), int(lp[1])), (int(lp_next[0]), int(lp_next[1])),
+                                 _trackable_obj.color)
+
                 cv2.circle(frame, (mid_x, mid_y), 4, (0, 255, 0), -1)
 
-            for _r in self.person_rectangles:
-                cv2.rectangle(frame, (_r[0], _r[1]), (_r[2], _r[3]), (0, 255, 0), 2)
+            # Show all objects that dlib is tracking
+            for _obj_key in self.trackable_objects.keys():
+                _trackable_obj = self.trackable_objects[_obj_key]
+
+                _confidence = "0"
+                _color = _trackable_obj.color
+                _text = "{} [{}%]".format(_trackable_obj.label, _confidence)
+                _r = _trackable_obj.last_rect
+                if _r:
+                    if not type(_r) == tuple:  # If it's a dlib rect, pull out the rectangular values
+                        _r = (_r.left(), _r.top(), _r.right(), _r.bottom())
+                    cv2.putText(frame, _text, (_r[0] - int(self.H/70), _r[1]),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, _color, 2)
+                    cv2.rectangle(frame, (_r[0], _r[1]), (_r[2], _r[3]), _color, 2)
+                else:
+                    cv2.putText(frame, _text, (mid_x - int(self.H/70), mid_y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                _color, 2)
 
             # loop over the info tuples and draw them on our frame
             self.hud_info(True, frame)
@@ -200,6 +227,22 @@ class PedestrianDetector:
         # close the connection and close all windows
         stream.release()
         cv2.destroyAllWindows()
+
+    def closest_rect(self, centroid):
+        closest = None
+        dist_closest = 1000000
+
+        for r in self.person_rectangles:
+            cX = int((r[0] + r[2]) / 2.0)
+            cY = int((r[1] + r[3]) / 2.0)
+
+            dist = math.dist(centroid, [cX, cY])
+            if dist < dist_closest:
+                closest = r
+                dist_closest = dist
+
+        return closest
+
 
     def hud_info(self, show_on_cv_frame, frame=None):
         _hud_info = [
