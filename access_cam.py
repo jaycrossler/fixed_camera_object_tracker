@@ -88,7 +88,7 @@ class PedestrianDetector:
 
             if self.W is None or self.H is None:
                 (self.H, self.W) = frame.shape[:2]
-                self.centroid_tracker.maxDistance = self.W / 10
+                self.centroid_tracker.maxDistance = self.W / 5
                 print("Resized to: {} {}".format(self.H, self.W))
 
             # Create the writer file and object if needed
@@ -130,15 +130,14 @@ class PedestrianDetector:
                     self.person_rectangles.append((startX, startY, endX, endY))
 
             # Get new guesses of where people will be
-            centroid_loc_tracker_guesses, loc_rects = self.centroid_tracker.update(self.person_rectangles)
+            centroid_loc_tracker_guesses = self.centroid_tracker.update(self.person_rectangles)
 
             for (objectID, centroid) in centroid_loc_tracker_guesses.items():
                 # check to see if a trackable object exists for the current object ID
                 _trackable_obj = self.trackable_objects.get(objectID, None)
                 if _trackable_obj is None:
                     _label = "Person {}".format(objectID+1)
-                    _rect = loc_rects[objectID]
-                    _trackable_obj = TrackableObject(objectID, centroid, label=_label, last_rect=_rect)
+                    _trackable_obj = TrackableObject(objectID, centroid, label=_label)
 
                 # otherwise, there is a trackable object that we can utilize it to determine direction
                 else:
