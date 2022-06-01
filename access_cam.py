@@ -17,11 +17,11 @@ from trackable_object import TrackableObject
 class PedestrianDetector:
     # TODO: Have Centroid tracker predict along a centroid's path to reacquire lost targets
 
-    NMS_THRESHOLD = 0.4
-    MIN_CONFIDENCE = 0.4
+    NMS_THRESHOLD = 0.3
+    MIN_CONFIDENCE = 0.3
     APPLY_AI_EVERY = 10
-    FRAMES_BEFORE_DISAPPEAR = 30
-    DISTANCE_BEFORE_NEW_OBJECT = 100
+    FRAMES_BEFORE_DISAPPEAR = (APPLY_AI_EVERY*3)+1
+    DISTANCE_BEFORE_NEW_OBJECT = (20*APPLY_AI_EVERY)
 
     RESIZE_WORKING_IMAGE = int(3840 / 2)
     USE_CUDA_GPU = False
@@ -88,7 +88,7 @@ class PedestrianDetector:
 
             if self.W is None or self.H is None:
                 (self.H, self.W) = frame.shape[:2]
-                self.centroid_tracker.maxDistance = self.W / 5
+                self.centroid_tracker.maxDistance = self.W / 8
                 print("Resized to: {} {}".format(self.H, self.W))
 
             # Create the writer file and object if needed
@@ -109,6 +109,9 @@ class PedestrianDetector:
 
                 for _box in pedestrian_boxes:
                     startX, startY, endX, endY = int(_box[1][0]), int(_box[1][1]), int(_box[1][2]), int(_box[1][3])
+
+                    # Trim the box that the learning algorithm will focus on
+                    startX, startY, endX, endY = self.shorten_box(startX, startY, endX, endY)
 
                     tracker = dlib.correlation_tracker()
                     _rect = dlib.rectangle(startX, startY, endX, endY)
@@ -137,7 +140,7 @@ class PedestrianDetector:
                 _trackable_obj = self.trackable_objects.get(objectID, None)
                 if _trackable_obj is None:
                     _label = "Person {}".format(objectID+1)
-                    _trackable_obj = TrackableObject(objectID, centroid, label=_label)
+                    _trackable_obj = TrackableObject(objectID, centroid, label=_label, w=self.W, h=self.H)
 
                 # otherwise, there is a trackable object that we can utilize it to determine direction
                 else:
@@ -145,7 +148,7 @@ class PedestrianDetector:
                     # centroids tells us which direction the object is moving (negative for 'up' and pos for 'down')
                     y = [c[1] for c in _trackable_obj.centroids]
                     direction = centroid[1] - np.mean(y)  # TODO: Use for target prediction
-                    _trackable_obj.centroids.append(centroid)
+                    _trackable_obj.add_centroid(centroid)
                     _trackable_obj.last_rect = self.closest_rect(centroid)
 
                     # check to see if the object has been counted or not
@@ -169,13 +172,14 @@ class PedestrianDetector:
                 mid_x = centroid[0]
                 mid_y = centroid[1]
 
+                lp_next = [mid_x, mid_y]
                 for count, lp in enumerate(_trackable_obj.centroids):
                     if count < len(_trackable_obj.centroids)-1:
                         lp_next = _trackable_obj.centroids[count+1]
                         cv2.line(frame, (int(lp[0]), int(lp[1])), (int(lp_next[0]), int(lp_next[1])),
                                  _trackable_obj.color)
 
-                cv2.circle(frame, (mid_x, mid_y), 4, (0, 255, 0), -1)
+                cv2.circle(frame, (lp_next[0], lp_next[1]), 4, (0, 255, 0), -1)
 
             # Show all objects that dlib is tracking
             for _obj_key in self.trackable_objects.keys():
@@ -219,6 +223,17 @@ class PedestrianDetector:
         # loop over the info tuples and draw them on our frame
         self.hud_info(False)
 
+        # Print out the points of the first path
+        # _trackable_obj = self.trackable_objects.get(1, None)
+        # x_list = []
+        # y_list = []
+        # for count, lp in enumerate(_trackable_obj.centroids):
+        #     x_list.append(int(lp[0]))
+        #     y_list.append(int(lp[1]))
+        # import json
+        # print("x_list = {}".format(json.dumps(x_list)))
+        # print("y_list = {}".format(json.dumps(y_list)))
+
         # Check to see if we need to release the video writer pointer
         if self.writer is not None:
             self.writer.release()
@@ -226,6 +241,18 @@ class PedestrianDetector:
         # close the connection and close all windows
         stream.release()
         cv2.destroyAllWindows()
+
+    @staticmethod
+    def shorten_box(_l, _t, _r, _b):
+        # return the top half of a box and middle 80%
+        _h = _b - _t
+        _w = _r - _l
+
+        _b = int(_b - (_h*.5))
+        _l = int(_l + (_w*.2))
+        _r = int(_r - (_w*.2))
+
+        return _l, _t, _r, _b
 
     def closest_rect(self, centroid):
         closest = None
