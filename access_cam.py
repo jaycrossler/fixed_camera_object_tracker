@@ -31,11 +31,6 @@ class PedestrianDetector:
     _config_path = "yolov4-tiny.cfg"
     # insert the HTTP(S)/RSTP feed from the camera
     # stream_url = "rtsp://admin:PW@@192.168.1.62/Streaming/Channels/102"
-    # stream_url = "videos/annke2hd.20220529_220302_1.mp4"
-    stream_url = "videos/annke2hd.20220529_235055_1.mp4"
-    # stream_url = "videos/reolink5hd.20220529_201349_1.mp4"
-
-    file_to_export_video_to = ""
 
     fps = None
     writer = None
@@ -47,19 +42,34 @@ class PedestrianDetector:
     status = None
     total_frames = 0
 
+    nn_layer_name = None
+    model = None
+    nn_person_layer_id = None
+
     total_up = 0
     total_down = 0
+
+    viewer_show_lines = False
+    viewer_show_boxes = False
 
     def __init__(self):
         self.initialize()
 
     def initialize(self):
         # Setup the model and person recognizer neural net
-        layer_name, model, person_layer_id = self.setup_model()
+        self.nn_layer_name, self.model, self.nn_person_layer_id = self.setup_model()
 
+        file_name = None
+        user_let_finish = True
+        while user_let_finish:
+            file_name = next_file_in_dir(current_file=file_name, directory="videos")
+            user_let_finish = self.play_video("videos/{}".format(file_name))
+        cv2.destroyAllWindows()
+
+    def play_video(self, stream_link, file_to_export_video_to=None):
         # Open the video
         print("[INFO] starting video stream...")
-        stream = cv2.VideoCapture(self.stream_url)
+        stream = cv2.VideoCapture(stream_link)
 
         # Create a writer object that could be used for saving
         self.writer = None
@@ -77,6 +87,7 @@ class PedestrianDetector:
 
         # Start tracking video speed
         self.fps = FPS().start()
+        user_let_finish = True
         while True:
             (grabbed, frame) = stream.read()
             if not grabbed:
@@ -92,9 +103,9 @@ class PedestrianDetector:
                 print("Resized to: {} {}".format(self.H, self.W))
 
             # Create the writer file and object if needed
-            if not self.file_to_export_video_to == "" and self.writer is None:
+            if not file_to_export_video_to == "" and self.writer is None:
                 self.fourcc = cv2.VideoWriter_fourcc(*"MJPG")
-                self.writer = cv2.VideoWriter(self.file_to_export_video_to, self.fourcc, 30,
+                self.writer = cv2.VideoWriter(file_to_export_video_to, self.fourcc, 30,
                                               (frame.shape[1], frame.shape[0]), True)
 
             self.person_rectangles = []
@@ -105,20 +116,21 @@ class PedestrianDetector:
                 self.person_trackers = []
 
                 # Use the NN to find boxes that meet a minimum confidence
-                pedestrian_boxes = self.pedestrian_detection(frame, model, layer_name, person_ids=person_layer_id)
+                pedestrian_boxes = self.pedestrian_detection(frame, self.model, self.nn_layer_name,
+                                                             person_ids=self.nn_person_layer_id)
 
                 for _box in pedestrian_boxes:
-                    startX, startY, endX, endY = int(_box[1][0]), int(_box[1][1]), int(_box[1][2]), int(_box[1][3])
+                    start_x, start_y, end_x, end_y = int(_box[1][0]), int(_box[1][1]), int(_box[1][2]), int(_box[1][3])
 
                     # Trim the box that the learning algorithm will focus on
-                    startX, startY, endX, endY = self.shorten_box(startX, startY, endX, endY)
+                    start_x, start_y, end_x, end_y = self.shorten_box(start_x, start_y, end_x, end_y)
 
                     tracker = dlib.correlation_tracker()
-                    _rect = dlib.rectangle(startX, startY, endX, endY)
+                    _rect = dlib.rectangle(start_x, start_y, end_x, end_y)
                     tracker.start_track(rgb, _rect)
 
                     self.person_trackers.append(tracker)
-                    self.person_rectangles.append((startX, startY, endX, endY))
+                    self.person_rectangles.append((start_x, start_y, end_x, end_y))
 
             else:  # Run on the "non AI processing" frames
                 # Predict where all previous trackers say people will be
@@ -127,14 +139,13 @@ class PedestrianDetector:
                     _track.update(rgb)  # TODO: Add in dead reckoning prediction here?
                     dlib_image_guess = _track.get_position()
 
-                    startX, startY = int(dlib_image_guess.left()), int(dlib_image_guess.top())
-                    endX, endY = int(dlib_image_guess.right()), int(dlib_image_guess.bottom())
+                    start_x, start_y = int(dlib_image_guess.left()), int(dlib_image_guess.top())
+                    end_x, end_y = int(dlib_image_guess.right()), int(dlib_image_guess.bottom())
 
-                    self.person_rectangles.append((startX, startY, endX, endY))
+                    self.person_rectangles.append((start_x, start_y, end_x, end_y))
 
             # Get new guesses of where people will be
             centroid_loc_tracker_guesses = self.centroid_tracker.update(self.person_rectangles)
-
             for (objectID, centroid) in centroid_loc_tracker_guesses.items():
                 # check to see if a trackable object exists for the current object ID
                 _trackable_obj = self.trackable_objects.get(objectID, None)
@@ -172,32 +183,34 @@ class PedestrianDetector:
                 mid_x = centroid[0]
                 mid_y = centroid[1]
 
-                lp_next = [mid_x, mid_y]
-                for count, lp in enumerate(_trackable_obj.centroids):
-                    if count < len(_trackable_obj.centroids)-1:
-                        lp_next = _trackable_obj.centroids[count+1]
-                        cv2.line(frame, (int(lp[0]), int(lp[1])), (int(lp_next[0]), int(lp_next[1])),
-                                 _trackable_obj.color)
+                if self.viewer_show_lines:
+                    lp_next = [mid_x, mid_y]
+                    for count, lp in enumerate(_trackable_obj.centroids):
+                        if count < len(_trackable_obj.centroids)-1:
+                            lp_next = _trackable_obj.centroids[count+1]
+                            cv2.line(frame, (int(lp[0]), int(lp[1])), (int(lp_next[0]), int(lp_next[1])),
+                                     _trackable_obj.color)
 
-                cv2.circle(frame, (lp_next[0], lp_next[1]), 4, (0, 255, 0), -1)
+                    cv2.circle(frame, (lp_next[0], lp_next[1]), 4, (0, 255, 0), -1)
 
             # Show all objects that dlib is tracking
-            for _obj_key in self.trackable_objects.keys():
-                _trackable_obj = self.trackable_objects[_obj_key]
+            if self.viewer_show_boxes:
+                for _obj_key in self.trackable_objects.keys():
+                    _trackable_obj = self.trackable_objects[_obj_key]
 
-                _confidence = "0"
-                _color = _trackable_obj.color
-                _text = "{} [{}%]".format(_trackable_obj.label, _confidence)
-                _r = _trackable_obj.last_rect
-                if _r:
-                    if not type(_r) == tuple:  # If it's a dlib rect, pull out the rectangular values
-                        _r = (_r.left(), _r.top(), _r.right(), _r.bottom())
-                    cv2.putText(frame, _text, (_r[0] - int(self.H/70), _r[1]),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, _color, 2)
-                    cv2.rectangle(frame, (_r[0], _r[1]), (_r[2], _r[3]), _color, 2)
-                else:
-                    cv2.putText(frame, _text, (mid_x - int(self.H/70), mid_y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                                _color, 2)
+                    _confidence = "0"
+                    _color = _trackable_obj.color
+                    _text = "{} [{}%]".format(_trackable_obj.label, _confidence)
+                    _r = _trackable_obj.last_rect
+                    if _r:
+                        if not type(_r) == tuple:  # If it's a dlib rect, pull out the rectangular values
+                            _r = (_r.left(), _r.top(), _r.right(), _r.bottom())
+                        cv2.putText(frame, _text, (_r[0] - int(self.H/70), _r[1]),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, _color, 2)
+                        cv2.rectangle(frame, (_r[0], _r[1]), (_r[2], _r[3]), _color, 2)
+                    else:
+                        cv2.putText(frame, _text, (mid_x - int(self.H/70), mid_y - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                    _color, 2)
 
             # loop over the info tuples and draw them on our frame
             self.hud_info(True, frame)
@@ -211,6 +224,13 @@ class PedestrianDetector:
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):  # User hit q
+                user_let_finish = False
+                break
+            elif key == ord("l"):
+                self.viewer_show_lines = not self.viewer_show_lines
+            elif key == ord("b"):
+                self.viewer_show_boxes = not self.viewer_show_boxes
+            elif key == ord("n"):
                 break
 
             self.total_frames += 1
@@ -240,7 +260,7 @@ class PedestrianDetector:
 
         # close the connection and close all windows
         stream.release()
-        cv2.destroyAllWindows()
+        return user_let_finish
 
     @staticmethod
     def shorten_box(_l, _t, _r, _b):
@@ -348,6 +368,17 @@ class PedestrianDetector:
                 results.append(res)
         # return the list of results
         return results
+
+
+def next_file_in_dir(current_file=None, directory="videos"):
+
+    file_list = os.listdir(directory)
+    next_index = 0
+    if current_file in file_list:
+        next_index = file_list.index(current_file) + 1
+    if next_index >= len(file_list):
+        next_index = 0
+    return file_list[next_index]
 
 
 PD = PedestrianDetector()
