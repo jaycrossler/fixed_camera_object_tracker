@@ -1,18 +1,18 @@
-import math
-
-import numpy as np
-import cv2
-import os
-import time
 import imutils
-import dlib
 from imutils.video import VideoStream, FPS
+import cv2
+import numpy as np
+import dlib
+from matplotlib import colors
+
+import math
+import yaml
+import json
+import os
+from argparse import ArgumentParser
+
 from centroid_tracker import CentroidTracker
 from trackable_object import TrackableObject
-import json
-from _ctypes import PyObj_FromPtr
-import re
-from string import ascii_lowercase as letters
 
 
 # INSTALL NOTE: Install all libraries.  If on mac, install cmake before dlib.  If on PC, install VS studio and C++
@@ -22,19 +22,17 @@ from string import ascii_lowercase as letters
 class PedestrianDetector:
     # TODO: Have Centroid tracker predict along a centroid's path to reacquire lost targets, then only feed that to dlib
 
+    # Default variables, also can be set in config.yaml
     NMS_THRESHOLD = 0.3
     MIN_CONFIDENCE = 0.3
     APPLY_AI_EVERY = 10
     FRAMES_BEFORE_DISAPPEAR = (APPLY_AI_EVERY * 3) + 1
     DISTANCE_BEFORE_NEW_OBJECT = (20 * APPLY_AI_EVERY)
-
     RESIZE_WORKING_IMAGE = int(3840 / 2)
     USE_CUDA_GPU = False
 
     DETECTORS = [
         {"detector_title": "person", "box_width": 4, "line_width": 2,"color": (255, 0, 0), "reduce_box": True},
-        {"detector_title": "car", "box_width": 1, "line_width": 3, "color": (0, 128, 128), "reduce_box": False},
-        {"detector_title": "dog", "box_width": 2, "line_width": 1, "color": (255, 255, 255), "reduce_box": False},
     ]
 
     _coco_labels_path = "coco.names"
@@ -42,7 +40,9 @@ class PedestrianDetector:
     _config_path = "yolov4-tiny.cfg"
     # insert the HTTP(S)/RSTP feed from the camera
     # stream_url = "rtsp://admin:PW@@192.168.1.62/Streaming/Channels/102"
+    stream_url = None
     current_video_name = ""
+    video_directory = "videos"
 
     fps = None
     writer = None
@@ -64,27 +64,96 @@ class PedestrianDetector:
 
     viewer_show_lines = False
     viewer_show_boxes = True
-    viewer_show_individual_colors=False
+    viewer_show_individual_colors = False
+
+    def load_configuration(self):
+
+        parser = ArgumentParser(description="Look for people and objects in video files or streams")
+        parser.add_argument("-c", "--config", dest="config_filename", default="config.yaml",
+                            help="config yaml file to read settings from", metavar="FILE")
+        parser.add_argument("-s", "--stream", dest="stream_url", default=None,
+                            help="stream url to use instead of local videos")
+        parser.add_argument("-d", "--dir", dest="video_directory", default="videos",
+                            help="local directory of videos to parse")
+
+        args = parser.parse_args()
+        self.stream_url = args.stream_url
+        self.video_directory = args.video_directory
+
+        if args.config_filename:
+            if os.path.exists(args.config_filename):
+                with open(args.config_filename, 'r') as conf_file:
+                    d = yaml.safe_load(conf_file)
+                    print("Loading YAML file {}".format(conf_file))
+
+                    settings_new = d['tracker']['settings'] if 'tracker' in d and 'settings' in d['tracker'] else {}
+                    detectors_new = d['tracker']['detectors'] if 'tracker' in d and 'detectors' in d['tracker'] else {}
+                    if 'nms_threshold' in settings_new:
+                        self.NMS_THRESHOLD = settings_new['nms_threshold']
+                    if 'min_nn_confidence' in settings_new:
+                        self.MIN_CONFIDENCE = settings_new['min_nn_confidence']
+                    if 'apply_ai_every' in settings_new:
+                        self.APPLY_AI_EVERY = settings_new['apply_ai_every']
+                    if 'distance_before_new_object' in settings_new:
+                        self.DISTANCE_BEFORE_NEW_OBJECT = settings_new['distance_before_new_object']
+                    if 'video_directory' in settings_new:
+                        self.video_directory = settings_new['video_directory']
+                    if 'resize_scanning_video_to_width' in settings_new:
+                        self.RESIZE_WORKING_IMAGE = settings_new['resize_scanning_video_to_width']
+                    if 'use_cuda_on_gpu' in settings_new:
+                        self.USE_CUDA_GPU = settings_new['use_cuda_on_gpu']
+                    print("..settings parsed")
+
+                    if len(detectors_new):
+                        self.DETECTORS = []
+                        for d_category in detectors_new:
+                            d = detectors_new[d_category]
+                            d_item = {'detector_title': d_category,
+                                      'box_width': d['box_width'] if 'box_width' in d else 1,
+                                      'line_width': d['line_width'] if 'line_width' in d else 1,
+                                      'color': d['color'] if 'color' in d else 'red',
+                                      'reduce_box': d['reduce_box'] if 'reduce_box' in d else False}
+                            self.DETECTORS.append(d_item)
+                    print("..{} detectors added".format(len(self.DETECTORS)))
+
+        # Change color words to values
+        for d in self.DETECTORS:
+            if 'color' in d and type(d['color'] == str):
+                col = colors.to_rgb(d['color'])
+                d['color'] = [int(i*255) for i in col]
+
+        print("Configuration set")
 
     def __init__(self):
         self.initialize()
 
     def initialize(self):
+        # Load settings from command line and conf file
+        self.load_configuration()
+
         # Setup the model and person recognizer neural net
         self.nn_layer_name, self.model = self.setup_model()
 
-        file_name = None
-        user_let_finish = True
-        while user_let_finish:
-            file_name = next_file_in_dir(current_file=file_name, directory="videos")
-            user_let_finish = self.play_video("videos/{}".format(file_name))
+        if self.stream_url:
+            print("[INFO] starting video stream...")
+            user_let_finish = self.play_video(self.stream_url)
+        else:
+            # Loop through all videos in video directory
+            file_name = None
+            user_let_finish = True
+            while user_let_finish:
+                file_name = next_file_in_dir(current_file=file_name, directory=self.video_directory)
+                user_let_finish = self.play_video("{}/{}".format(self.video_directory, file_name))
+
+        # When done, have opencv close the video window
         cv2.destroyAllWindows()
 
     def play_video(self, stream_link, file_to_export_video_to=""):
         # Open the video
-        print("[INFO] starting video stream...")
         stream = cv2.VideoCapture(stream_link)
         self.current_video_name = stream_link
+        # Don't print stream title in case password is with URL
+        print("[INFO] -- Loaded video: {}".format("Stream" if self.stream_url else stream_link))
 
         # Create a writer object that could be used for saving
         self.writer = None

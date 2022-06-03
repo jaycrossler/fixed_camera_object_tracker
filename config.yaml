@@ -1,0 +1,21 @@
+tracker:
+  settings:
+    nms_threshold: 0.3
+    min_nn_confidence: 0.3
+    apply_ai_every: 9
+    distance_before_new_object: 100
+    video_directory: videos
+  detectors:
+    person:
+      box_width: 4
+      line_width: 2
+      color: red
+      reduce_box: True
+    car:
+      box_width: 6
+      line_width: 4
+      color: blue
+    dog:
+      box_width: 2
+      line_width: 3
+      color: brown
