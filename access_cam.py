@@ -15,10 +15,6 @@ from centroid_tracker import CentroidTracker
 from trackable_object import TrackableObject
 
 
-# INSTALL NOTE: Install all libraries.  If on mac, install cmake before dlib.  If on PC, install VS studio and C++
-#   build tools and build one project using CMake.  Then pip install dlib
-
-
 class PedestrianDetector:
     # TODO: Have Centroid tracker predict along a centroid's path to reacquire lost targets, then only feed that to dlib
 
