@@ -15,9 +15,19 @@ After creating a project compiler, install all libraries by adding in settings, 
 Install cmake before dlib as dlib cross compiles a bunch of C++ code into being usable by Python
 
 ## Windows 10/11 Installation
-If building on Windows 10/11, install "Microsoft VS studio" and choose the C++ settings, the Build tools, and C++ CMake settings
-Reboot, then build one project in Visual Studio using CMake (choose a sample C++ CMake project).  This will set up path and other needed settings.
-Then, go back to PyCharm, and you can finally install dlib (use the GUI or pip install dlib)
+If building on Windows 10/11, installing Dlib is quite painful:
+- revised from: [Install Instructions](https://medium.com/analytics-vidhya/how-to-install-dlib-library-for-python-in-windows-10-57348ba1117f#:~:text=First%20of%20all%2C%20you%20need%20to%20install%20CMake%20library.&text=Then%2C%20you%20can%20install%20dlib%20library%20using%20pip%20install%20).
+- From cmake.org/download, install cmake (install CMake to path for all user)
+- install "Microsoft VS studio"
+- choose the C++ settings (check all the ones listed in [MS List](https://docs.microsoft.com/en-us/cpp/build/cmake-projects-in-visual-studio?view=msvc-170), the Build tools, and C++ CMake settings
+- Might need to add CMake to System Path, as described in Install Instructions above
+- Reboot
+- (Verify that cmake is in your path))
+- Open VS Studio, and build one project in Visual Studio using CMake (choose a sample C++ CMake project).  This will set up path and other needed settings.
+- Then, go back to PyCharm, and you can now
+- pip install cmake
+- install dlib (use the GUI or pip install dlib)
+- TODO: Determine if all the dlib actions can be done using OpenCV instead
 
 ## After all libraries including dlib are installed:
 Next, create a configuration to point to "access_cam.py" as the main file for processing
